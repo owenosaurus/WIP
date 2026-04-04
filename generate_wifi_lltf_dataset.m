@@ -43,7 +43,8 @@ kDbStdWeak  = 2.0;
 kDbMinWeak  = 0.0;
 kDbMaxWeak  = 6.0;
 
-speedRangeMps = [0 3];
+speedRangeMps = [0 10];
+
 cfoPpmMean = 0;
 cfoPpmStd  = 0.5;
 cfoPpmClip = 1;
