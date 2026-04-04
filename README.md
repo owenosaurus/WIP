@@ -28,5 +28,5 @@ kDbMaxWeak  = 6.0
 speedRangeMps = [0 10]  
 
 ## dataset size
-traing 100000  
-evaluation 10000
+traing 100k  
+evaluation 10k
