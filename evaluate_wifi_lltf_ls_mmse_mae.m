@@ -17,8 +17,6 @@ cfg = wlanNonHTConfig('ChannelBandwidth', 'CBW20');
 numSamples = size(rxEval, 2);
 
 fprintf('EVAL CSV: %s\n', evalCsv);
-fprintf('Use LLTF CFO compensation: 0\n');
-fprintf('Samples: %d\n\n', numSamples);
 
 hLs = zeros(52, numSamples);
 
