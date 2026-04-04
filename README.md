@@ -2,8 +2,8 @@
 
 ## MLP structure
 input_shape=(2, 64, 2)  
+hidden_dims=(256, 128, 128, 64)  
 output_shape=(52, 2)  
-hidden_dims=(256, 128, 128, 64)
 
 
 ## Channel setting
