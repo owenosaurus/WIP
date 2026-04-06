@@ -27,7 +27,7 @@ class MLPRegressor(nn.Module):
         self,
         input_shape=(2, 64, 2),
         output_shape=(52, 2),
-        hidden_dims=(256, 128, 128),
+        hidden_dims=(128, 128, 128),
         dropout=0.1,
     ):
         super().__init__()
