@@ -41,6 +41,7 @@ class MLPRegressor(nn.Module):
             layers.extend(
                 [
                     nn.Linear(prev_dim, h),
+                    nn.BatchNorm1d(h),
                     nn.ReLU(),
                     nn.Dropout(dropout),
                 ]
@@ -79,23 +80,47 @@ def build_dataloaders(train_csv_path: str, val_csv_path: str, batch_size: int = 
     return train_loader, val_loader
 
 
-def rmse_loss(pred, target, eps: float = 1e-8):
-    mse = nn.functional.mse_loss(pred, target)
-    return torch.sqrt(mse + eps)
+def nrmse_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Global batch NRMSE:
+        sqrt( sum((pred-target)^2) / sum(target^2) )
+
+    Since the last dimension stores [real, imag], this is equivalent to
+    complex-domain NRMSE.
+    """
+    num = torch.sum((pred - target) ** 2)
+    den = torch.sum(target ** 2)
+    return torch.sqrt(num / (den + eps) + eps)
+
+
+def compute_batch_metrics(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
+    """
+    Returns:
+        rmse   = sqrt(mean squared error over all scalar elements)
+        nrmse  = sqrt(sum squared error / sum target energy)
+    """
+    diff = pred - target
+    sq_err = torch.sum(diff ** 2)
+    target_energy = torch.sum(target ** 2)
+    count = diff.numel()
+
+    rmse = torch.sqrt(sq_err / max(count, 1) + eps)
+    nrmse = torch.sqrt(sq_err / (target_energy + eps) + eps)
+    return rmse, nrmse
 
 
 def run_train_epoch(model, loader, device, optimizer):
     model.train()
 
     total_sq_error = 0.0
-    total_count = 0
+    total_target_energy = 0.0
 
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
         pred = model(x)
-        loss = rmse_loss(pred, y)
+        loss = nrmse_loss(pred, y)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -103,16 +128,17 @@ def run_train_epoch(model, loader, device, optimizer):
 
         diff = pred - y
         total_sq_error += torch.square(diff).sum().item()
-        total_count += diff.numel()
+        total_target_energy += torch.square(y).sum().item()
 
-    return float(np.sqrt(total_sq_error / total_count))
+    train_nrmse = float(np.sqrt(total_sq_error / max(total_target_energy, 1e-12)))
+    return train_nrmse
 
 
-def evaluate_rmse_mae(model, loader, device):
+def evaluate_nrmse_rmse(model, loader, device):
     model.eval()
 
     total_sq_error = 0.0
-    total_abs_error = 0.0
+    total_target_energy = 0.0
     total_count = 0
 
     with torch.no_grad():
@@ -124,12 +150,12 @@ def evaluate_rmse_mae(model, loader, device):
             diff = pred - y
 
             total_sq_error += torch.square(diff).sum().item()
-            total_abs_error += torch.abs(diff).sum().item()
+            total_target_energy += torch.square(y).sum().item()
             total_count += diff.numel()
 
-    rmse = float(np.sqrt(total_sq_error / total_count))
-    mae = float(total_abs_error / total_count)
-    return rmse, mae
+    rmse = float(np.sqrt(total_sq_error / max(total_count, 1)))
+    nrmse = float(np.sqrt(total_sq_error / max(total_target_energy, 1e-12)))
+    return rmse, nrmse
 
 
 class EarlyStopping:
@@ -151,39 +177,39 @@ class EarlyStopping:
 
 
 def save_metric_plot(
-    train_rmse_history,
-    val_mae_history,
+    train_nrmse_history,
+    val_nrmse_history,
     save_path: str,
     best_rmse: float,
-    best_mae: float,
+    best_nrmse: float,
     last_rmse: float,
-    last_mae: float,
+    last_nrmse: float,
 ):
-    epochs = range(1, len(train_rmse_history) + 1)
+    epochs = range(1, len(train_nrmse_history) + 1)
     plot_eps = 1e-12
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.8))
 
-    axes[0].plot(epochs, np.maximum(train_rmse_history, plot_eps), label="Train RMSE")
+    axes[0].plot(epochs, np.maximum(train_nrmse_history, plot_eps), label="Train NRMSE")
     axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("RMSE")
-    axes[0].set_title("Train RMSE")
+    axes[0].set_ylabel("NRMSE")
+    axes[0].set_title("Train NRMSE")
     axes[0].set_yscale("log")
     axes[0].grid(True, which="both")
     axes[0].legend()
 
-    axes[1].plot(epochs, np.maximum(val_mae_history, plot_eps), label="Val MAE")
+    axes[1].plot(epochs, np.maximum(val_nrmse_history, plot_eps), label="Val NRMSE")
     axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("MAE")
-    axes[1].set_title("Validation MAE")
+    axes[1].set_ylabel("NRMSE")
+    axes[1].set_title("Validation NRMSE")
     axes[1].set_yscale("log")
     axes[1].grid(True, which="both")
     axes[1].legend()
 
     summary_text = (
         "[Validation metrics]\n"
-        f"Best model  - RMSE: {best_rmse:.6f} | MAE: {best_mae:.6f}\n"
-        f"Last model  - RMSE: {last_rmse:.6f} | MAE: {last_mae:.6f}"
+        f"Best model NRMSE: {best_nrmse:.6f}\n"
+        f"Last model NRMSE: {last_nrmse:.6f}"
     )
     fig.text(0.5, 0.02, summary_text, ha="center", va="bottom", fontsize=10)
 
@@ -204,13 +230,13 @@ def train_one_snr(
     data_dir: str = "/home/jinx/project/CE01/data_set",
     save_dir: str = "/home/jinx/project/CE01/results",
     seed: int = 94,
-    batch_size: int = 128,
+    batch_size: int = 64,
     num_epochs: int = 200,
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-5,
     early_stopping_patience: int = 30,
     early_stopping_min_delta: float = 1e-6,
-    hidden_dims=(256, 128, 128, 128, 64),
+    hidden_dims=(128, 128, 128),
     dropout: float = 0.1,
 ):
     set_seed(seed)
@@ -223,7 +249,7 @@ def train_one_snr(
 
     best_path = os.path.join(results_dir, f"best_model_{snr_db}db.pt")
     last_path = os.path.join(results_dir, f"last_model_{snr_db}db.pt")
-    plot_path = os.path.join(results_dir, f"training_curve_{snr_db}db.png")
+    plot_path = os.path.join(results_dir, f"results_table_{snr_db}db.png")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -251,72 +277,67 @@ def train_one_snr(
         min_delta=early_stopping_min_delta,
     )
 
-    best_val_mae = float("inf")
+    best_val_nrmse = float("inf")
     best_val_rmse = None
     last_val_rmse = None
-    last_val_mae = None
+    last_val_nrmse = None
 
-    train_rmse_history = []
-    val_mae_history = []
+    train_nrmse_history = []
+    val_nrmse_history = []
 
     for epoch in range(1, num_epochs + 1):
-        train_rmse = run_train_epoch(model, train_loader, device, optimizer)
-        val_rmse, val_mae = evaluate_rmse_mae(model, val_loader, device)
+        train_nrmse = run_train_epoch(model, train_loader, device, optimizer)
+        val_rmse, val_nrmse = evaluate_nrmse_rmse(model, val_loader, device)
 
-        train_rmse_history.append(train_rmse)
-        val_mae_history.append(val_mae)
+        train_nrmse_history.append(train_nrmse)
+        val_nrmse_history.append(val_nrmse)
 
         last_val_rmse = val_rmse
-        last_val_mae = val_mae
+        last_val_nrmse = val_nrmse
 
-        if val_mae < best_val_mae:
-            best_val_mae = val_mae
+        if val_nrmse < best_val_nrmse:
+            best_val_nrmse = val_nrmse
             best_val_rmse = val_rmse
             torch.save(model.state_dict(), best_path)
 
         print(
             f"SNR {snr_db:2d} dB | "
             f"Epoch [{epoch:03d}/{num_epochs:03d}] | "
-            f"Train RMSE: {train_rmse:.6f} | "
-            f"Val RMSE: {val_rmse:.6f} | "
-            f"Val MAE: {val_mae:.6f}"
+            f"Train NRMSE: {train_nrmse:.6f} | "
+            f"Val NRMSE: {val_nrmse:.6f}"
         )
 
-        early_stopper.step(val_mae)
+        early_stopper.step(val_nrmse)
         if early_stopper.should_stop:
             print(
                 f"Early stopping at epoch {epoch}. "
-                f"Best Val MAE: {best_val_mae:.6f}"
+                f"Best Val NRMSE: {best_val_nrmse:.6f}"
             )
             break
 
     torch.save(model.state_dict(), last_path)
 
     save_metric_plot(
-        train_rmse_history=train_rmse_history,
-        val_mae_history=val_mae_history,
+        train_nrmse_history=train_nrmse_history,
+        val_nrmse_history=val_nrmse_history,
         save_path=plot_path,
         best_rmse=best_val_rmse,
-        best_mae=best_val_mae,
+        best_nrmse=best_val_nrmse,
         last_rmse=last_val_rmse,
-        last_mae=last_val_mae,
+        last_nrmse=last_val_nrmse,
     )
 
     print("\nTraining finished.")
-    print(f"Best Val RMSE: {best_val_rmse:.6f}")
-    print(f"Best Val MAE: {best_val_mae:.6f}")
-    print(f"Last Val RMSE: {last_val_rmse:.6f}")
-    print(f"Last Val MAE: {last_val_mae:.6f}")
+    print(f"Best Val NRMSE: {best_val_nrmse:.6f}")
+    print(f"Last Val NRMSE: {last_val_nrmse:.6f}")
     print(f"Best model saved to: {best_path}")
     print(f"Last model saved to: {last_path}")
     print(f"Training curve saved to: {plot_path}")
 
     return {
         "snr_db": snr_db,
-        "best_val_rmse": best_val_rmse,
-        "best_val_mae": best_val_mae,
-        "last_val_rmse": last_val_rmse,
-        "last_val_mae": last_val_mae,
+        "best_val_nrmse": best_val_nrmse,
+        "last_val_nrmse": last_val_nrmse,
         "best_model_path": best_path,
         "last_model_path": last_path,
         "plot_path": plot_path,
