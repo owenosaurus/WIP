@@ -1,34 +1,38 @@
 function resultsTbl = run_wifi_lltf_snr_sweep_wrapper()
 % Call external functions:
-%   1) generate_wifi_lltf_dataset(snrDb)
-%   2) [lsMae, lmmseMae] = evaluate_wifi_lltf_ls_mmse_mae(evalCsv)
+%   1) generate_wifi_lltf_dataset(snrDb, channelType)
+%   2) [lsNrmse, lmmseNrmse] = evaluate_wifi_lltf_ls_mmse_nrmse(evalCsv)
 %
-% SNR sweep: 18, 15, 12, 9, 6, 3, 0 dB
+% SNR sweep: 0, 3, 6, 9, 12, 15, 18 dB
 
-snrList = 18:-3:0;
+snrList = 0:3:18;
 
-lsMaeList = zeros(numel(snrList), 1);
-lmmseMaeList = zeros(numel(snrList), 1);
+lsNrmseList = zeros(numel(snrList), 1);
+lmmseNrmseList = zeros(numel(snrList), 1);
+
+channelType = 'rician';   % 'awgn', 'rayleigh', or 'rician'
 
 for ii = 1:numel(snrList)
     snrDb = snrList(ii);
 
     fprintf('============================================================\n');
     fprintf('SNR = %d dB\n', snrDb);
+    fprintf('channelType = %s\n', channelType);
 
-    generate_wifi_lltf_dataset(snrDb);
+    generate_wifi_lltf_dataset(snrDb, channelType);
 
     evalCsv = sprintf('wifi_lltf_dataset_%ddb_eval.csv', round(snrDb));
-    [lsMae, lmmseMae] = evaluate_wifi_lltf_ls_mmse_mae(evalCsv);
 
-    lsMaeList(ii) = lsMae;
-    lmmseMaeList(ii) = lmmseMae;
+    [lsNrmse, lmmseNrmse] = evaluate_wifi_lltf_ls_mmse_nrmse(evalCsv);
+
+    lsNrmseList(ii) = lsNrmse;
+    lmmseNrmseList(ii) = lmmseNrmse;
 end
 
-resultsTbl = table(snrList(:), lsMaeList, lmmseMaeList, ...
-    'VariableNames', {'SNR DB', 'LS MAE', 'LMMSE MAE'});
+resultsTbl = table(snrList(:), lsNrmseList, lmmseNrmseList, ...
+    'VariableNames', {'SNR_dB', 'LS_NRMSE', 'LMMSE_NRMSE'});
 
-csvFile = 'wifi_lltf_results.csv';
+csvFile = sprintf('wifi_lltf_results_%s.csv', channelType);
 writetable(resultsTbl, csvFile);
 fprintf('Saved result table: %s\n', csvFile);
 
