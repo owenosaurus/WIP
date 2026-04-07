@@ -24,8 +24,8 @@ def run_snr_sweep(
         results.append(
             {
                 "snr_db": result["snr_db"],
-                "best_val_mae": result["best_val_mae"],
-                "last_val_mae": result["last_val_mae"],
+                "best_val_nrmse": result["best_val_nrmse"],
+                "last_val_nrmse": result["last_val_nrmse"],
             }
         )
 
@@ -42,7 +42,7 @@ def run_snr_sweep(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--snr_list", type=int, nargs="+", default=[18, 15, 12, 9, 6, 3, 0])
+    parser.add_argument("--snr_list", type=int, nargs="+", default=[0, 3, 6, 9, 12, 15, 18])
     parser.add_argument("--data_dir", type=str, default="/home/jinx/project/CE01/data_set")
     parser.add_argument("--save_dir", type=str, default="/home/jinx/project/CE01/results")
     parser.add_argument("--csv_name", type=str, default="results_table.csv")
