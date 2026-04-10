@@ -1,5 +1,5 @@
-function [lsNrmse, lmmseNrmse] = evaluate_wifi_lltf_ls_mmse_nrmse(evalCsv)
-% Evaluate LS and same-file LMMSE(MMSE-style baseline) using one *_eval.csv file.
+function [lsNmae, lmmseNmae] = evaluate_wifi_lltf_ls_mmse_nmae(evalCsv)
+% Evaluate LS and same-file MMSE using one *_eval.csv file.
 %
 % Dataset row format:
 % [ X(1)_I X(1)_Q ... X(160)_I X(160)_Q  Y(1)_I Y(1)_Q ... Y(52)_I Y(52)_Q ]
@@ -8,11 +8,11 @@ function [lsNrmse, lmmseNrmse] = evaluate_wifi_lltf_ls_mmse_nrmse(evalCsv)
 % Y : ground-truth channel label H(52)
 %
 % Output:
-%   lsNrmse    : normalized RMSE of LS estimate
-%   lmmseNrmse : normalized RMSE of same-file LMMSE estimate
+%   lsNmae    : actually NMAE of LS estimate
+%   lmmseNmae : actually NMAE of same-file MMSE estimate
 
 if nargin < 1
-    evalCsv = 'wifi_lltf_dataset_6db_eval.csv';
+    evalCsv = 'wifi_lltf_dataset_18db_eval.csv';
 end
 
 cfg = wlanNonHTConfig('ChannelBandwidth', 'CBW20');
@@ -29,29 +29,36 @@ for n = 1:numSamples
     hLs(:, n) = estimateLS(rx, cfg);
 end
 
-lsNrmse = computeNRMSE(hLs, hTrue);
+%  NMAE
+lsNmae = computeNMAE(hLs, hTrue);
 
+% same-file channel covariance based MMSE
 muH = mean(hTrue, 2);
-muZ = mean(hLs, 2);
+Hc  = hTrue - muH;
+Rhh = (Hc * Hc') / max(numSamples - 1, 1);
 
-Hc = hTrue - muH;
-Zc = hLs   - muZ;
+reg = 1e-8 * real(trace(Rhh)) / size(Rhh, 1);
+Rhh = Rhh + reg * eye(size(Rhh));
 
-Chz = (Hc * Zc') / max(numSamples - 1, 1);
-Czz = (Zc * Zc') / max(numSamples - 1, 1);
+hLmmse  = zeros(52, numSamples);
+noiseVar = zeros(1, numSamples);
 
-reg = 1e-8 * real(trace(Czz)) / size(Czz, 1);
-W = Chz / (Czz + reg * eye(size(Czz)));
+for n = 1:numSamples
+    rx = rxEval(:, n);
+    demodLLTF = wlanLLTFDemodulate(rx, cfg);
+    noiseVar(n) = wlanLLTFNoiseEstimate(demodLLTF);
+    
+    % L-LTF LS error variance
+    sigma2 = max(real(noiseVar(n)) / 2, 0);
 
-hLmmse = muH + W * (hLs - muZ);
-lmmseNrmse = computeNRMSE(hLmmse, hTrue);
+    hLmmse(:, n) = muH + (Rhh / (Rhh + sigma2 * eye(size(Rhh)))) * (hLs(:, n) - muH);
+end
+
+lmmseNmae = computeNMAE(hLmmse, hTrue);
 
 fprintf('Results\n');
-fprintf('  LS NRMSE    : %.6f\n', lsNrmse);
-fprintf('  LMMSE NRMSE : %.6f\n', lmmseNrmse);
-fprintf('\n');
-fprintf('Note: LMMSE here is fitted and evaluated on the same *_eval file.\n');
-fprintf('      So it is useful for error inspection, but optimistic as a baseline.\n');
+fprintf('LS NMAE    : %.6f\n', lsNmae);
+fprintf('MMSE NMAE  : %.6f\n\n', lmmseNmae);
 
 end
 
@@ -63,13 +70,13 @@ Hls = chEst(:, 1, 1);
 end
 
 
-function nrmse = computeNRMSE(Hhat, Htrue)
-num = sum(abs(Hhat(:) - Htrue(:)).^2);
-den = sum(abs(Htrue(:)).^2);
+function nmae = computeNMAE(Hhat, Htrue)
+num = sum(abs(Hhat(:) - Htrue(:)));
+den = sum(abs(Htrue(:)));
 
-assert(den > 0, 'Ground-truth energy is zero, cannot compute NRMSE.');
+assert(den > 0, 'Ground-truth magnitude sum is zero, cannot compute NMAE.');
 
-nrmse = sqrt(num / den);
+nmae = num / den;
 end
 
 
