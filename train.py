@@ -59,9 +59,9 @@ class MLPRegressor(nn.Module):
         return x.reshape(x.size(0), *self.output_shape)
 
 
-def build_dataloaders(train_csv_path: str, val_csv_path: str, batch_size: int = 128):
+def build_dataloaders(train_csv_path: str, eval_csv_path: str, batch_size: int = 128):
     train_dataset = WifiLTSChannelDataset(train_csv_path)
-    val_dataset = WifiLTSChannelDataset(val_csv_path)
+    eval_dataset = WifiLTSChannelDataset(eval_csv_path)
 
     train_loader = DataLoader(
         train_dataset,
@@ -70,14 +70,14 @@ def build_dataloaders(train_csv_path: str, val_csv_path: str, batch_size: int = 
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
-    val_loader = DataLoader(
-        val_dataset,
+    eval_loader = DataLoader(
+        eval_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
-    return train_loader, val_loader
+    return train_loader, eval_loader
 
 
 def _complex_squared_norm(x: torch.Tensor) -> torch.Tensor:
@@ -152,8 +152,8 @@ def evaluate_nmae(model, loader, device):
             total_abs_error += _complex_abs(diff).sum().item()
             total_target_abs += _complex_abs(y).sum().item()
 
-    val_nmae = float(total_abs_error / max(total_target_abs, 1e-12))
-    return val_nmae
+    eval_nmae = float(total_abs_error / max(total_target_abs, 1e-12))
+    return eval_nmae
 
 
 class EarlyStopping:
@@ -176,7 +176,7 @@ class EarlyStopping:
 
 def save_train_plot(
     train_mse_history,
-    val_nmae_history,
+    eval_nmae_history,
     save_path: str,
     best_nmae: float,
 ):
@@ -197,12 +197,12 @@ def save_train_plot(
 
     axes[1].plot(
         epochs,
-        np.maximum(val_nmae_history, plot_eps),
-        label="Val NMAE",
+        np.maximum(eval_nmae_history, plot_eps),
+        label="Eval NMAE",
     )
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("NMAE")
-    axes[1].set_title("Validation NMAE")
+    axes[1].set_title("Evaluation NMAE")
     axes[1].grid(True, which="both")
     axes[1].legend()
 
@@ -241,16 +241,16 @@ def train_one_snr(
     os.makedirs(results_dir, exist_ok=True)
 
     train_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db.csv")
-    val_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db_eval.csv")
+    eval_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db_eval.csv")
 
     best_path = os.path.join(results_dir, f"best_model_{snr_db}db.pt")
     plot_path = os.path.join(results_dir, f"training_plot_{snr_db}db.png")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader, val_loader = build_dataloaders(
+    train_loader, eval_loader = build_dataloaders(
         train_csv_path=train_csv_path,
-        val_csv_path=val_csv_path,
+        eval_csv_path=eval_csv_path,
         batch_size=batch_size,
     )
 
@@ -272,52 +272,52 @@ def train_one_snr(
         min_delta=early_stopping_min_delta,
     )
 
-    best_val_nmae = float("inf")
+    best_eval_nmae = float("inf")
 
     train_mse_history = []
-    val_nmae_history = []
+    eval_nmae_history = []
 
     for epoch in range(1, num_epochs + 1):
         train_mse = run_train_epoch(model, train_loader, device, optimizer)
-        val_nmae = evaluate_nmae(model, val_loader, device)
+        eval_nmae = evaluate_nmae(model, eval_loader, device)
 
         train_mse_history.append(train_mse)
-        val_nmae_history.append(val_nmae)
+        eval_nmae_history.append(eval_nmae)
 
-        if val_nmae < best_val_nmae:
-            best_val_nmae = val_nmae
+        if eval_nmae < best_eval_nmae:
+            best_eval_nmae = eval_nmae
             torch.save(model.state_dict(), best_path)
 
         print(
             f"SNR {snr_db:2d} dB | "
-            f"Epoch {epoch:03d} | "
+            f"Epoch [{epoch:03d}/{num_epochs:03d}] | "
             f"Train MSE: {train_mse:.6f} | "
-            f"Val NMAE: {val_nmae:.6f}"
+            f"Eval NMAE: {eval_nmae:.6f}"
         )
 
-        early_stopper.step(val_nmae)
+        early_stopper.step(eval_nmae)
         if early_stopper.should_stop:
             print(
                 f"Early stopping at epoch {epoch}. "
-                f"Best Val NMAE: {best_val_nmae:.6f}"
+                f"Best Eval NMAE: {best_eval_nmae:.6f}"
             )
             break
 
     save_train_plot(
         train_mse_history=train_mse_history,
-        val_nmae_history=val_nmae_history,
+        eval_nmae_history=eval_nmae_history,
         save_path=plot_path,
-        best_nmae=best_val_nmae,
+        best_nmae=best_eval_nmae,
     )
 
     print("\nTraining finished.")
-    print(f"Best Val NMAE: {best_val_nmae:.6f}")
+    print(f"Best Eval NMAE: {best_eval_nmae:.6f}")
     print(f"Best model saved to: {best_path}")
     print(f"Training plot saved to: {plot_path}")
 
     return {
         "snr_db": snr_db,
-        "best_val_nmae": best_val_nmae,
+        "best_eval_nmae": best_eval_nmae,
         "best_model_path": best_path,
         "plot_path": plot_path,
     }
