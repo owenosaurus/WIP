@@ -26,14 +26,12 @@ def run_snr_sweep(
 
         results.append(
             {
-                "snr_db": result["snr_db"],
-                "best_val_nmae": result["best_val_nmae"],
-                "best_model_path": result["best_model_path"],
-                "plot_path": result["plot_path"],
+                "SNR_dB": result["snr_db"],
+                "DNN_NMAE": result["best_eval_nmae"],
             }
         )
 
-    df = pd.DataFrame(results).sort_values("snr_db").reset_index(drop=True)
+    df = pd.DataFrame(results).sort_values("SNR_dB").reset_index(drop=True)
     csv_path = os.path.join(results_dir, csv_name)
     df.to_csv(csv_path, index=False)
 
