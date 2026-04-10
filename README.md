@@ -2,7 +2,7 @@
 
 ## MLP structure
 input shape=(2, 64, 2)  
-hidden dims=(128, 128, 128)  
+hidden dimension=(128, 128, 128)  
 output shape=(52, 2)  
 adam optimizer    
 Loss Function: MSE  
