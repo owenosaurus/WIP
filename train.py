@@ -100,14 +100,16 @@ def _complex_abs(x: torch.Tensor) -> torch.Tensor:
     return torch.abs(x)
 
 
-def mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def rmse_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """
-    Training loss: complex-domain MSE
-        MSE = mean( |pred - target|^2 )
+    Training loss: complex-domain RMSE
+        RMSE = sqrt( mean( |pred - target|^2 ) )
     when the last dimension is [real, imag].
+
+    The small eps keeps the square-root derivative numerically stable near zero.
     """
     sq_err = _complex_squared_norm(pred - target)
-    return torch.mean(sq_err)
+    return torch.sqrt(torch.mean(sq_err) + eps)
 
 
 def run_train_epoch(model, loader, device, optimizer):
@@ -121,7 +123,7 @@ def run_train_epoch(model, loader, device, optimizer):
         y = y.to(device, non_blocking=True)
 
         pred = model(x)
-        loss = mse_loss(pred, y)
+        loss = rmse_loss(pred, y)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -131,8 +133,8 @@ def run_train_epoch(model, loader, device, optimizer):
         total_sq_error += sq_err_per_coeff.sum().item()
         total_coeff_count += sq_err_per_coeff.numel()
 
-    train_mse = float(total_sq_error / max(total_coeff_count, 1))
-    return train_mse
+    train_rmse = float(np.sqrt(total_sq_error / max(total_coeff_count, 1)))
+    return train_rmse
 
 
 def evaluate_nmae(model, loader, device):
@@ -175,23 +177,34 @@ class EarlyStopping:
 
 
 def save_train_plot(
-    train_mse_history,
+    train_rmse_history,
     eval_nmae_history,
     save_path: str,
     best_nmae: float,
+    best_epoch=None,
 ):
-    epochs = range(1, len(train_mse_history) + 1)
+    epochs = range(1, len(train_rmse_history) + 1)
     plot_eps = 1e-12
 
     fig, axes = plt.subplots(2, 1, figsize=(8, 6.5), sharex=True)
 
     axes[0].plot(
         epochs,
-        np.maximum(train_mse_history, plot_eps),
-        label="Train MSE",
+        np.maximum(train_rmse_history, plot_eps),
+        label="Train RMSE",
     )
-    axes[0].set_ylabel("MSE")
-    axes[0].set_title("Train MSE")
+    if best_epoch is not None and 1 <= best_epoch <= len(train_rmse_history):
+        best_train_rmse = max(train_rmse_history[best_epoch - 1], plot_eps)
+        axes[0].scatter(
+            [best_epoch],
+            [best_train_rmse],
+            color="red",
+            marker="o",
+            s=20,
+            zorder=5,
+        )
+    axes[0].set_ylabel("RMSE")
+    axes[0].set_title("Train RMSE")
     axes[0].grid(True, which="both")
     axes[0].legend()
 
@@ -200,17 +213,30 @@ def save_train_plot(
         np.maximum(eval_nmae_history, plot_eps),
         label="Eval NMAE",
     )
+    if best_epoch is not None and 1 <= best_epoch <= len(eval_nmae_history):
+        best_eval_nmae_for_plot = max(eval_nmae_history[best_epoch - 1], plot_eps)
+        axes[1].scatter(
+            [best_epoch],
+            [best_eval_nmae_for_plot],
+            color="red",
+            marker="o",
+            s=20,
+            zorder=5,
+        )
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("NMAE")
     axes[1].set_title("Evaluation NMAE")
     axes[1].grid(True, which="both")
     axes[1].legend()
 
-    summary_text = f"Best model - NMAE: {best_nmae:.6f}"
+    if best_epoch is not None:
+        summary_text = f"Best Eval NMAE: {best_nmae:.6f} at epoch {best_epoch}"
+    else:
+        summary_text = f"Best Eval NMAE: {best_nmae:.6f}"
     fig.text(0.5, 0.01, summary_text, ha="center", va="bottom", fontsize=10)
 
     fig.tight_layout(rect=[0, 0.04, 1, 1])
-    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    fig.savefig(save_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -227,7 +253,7 @@ def train_one_snr(
     save_dir: str = "/home/jinx/project/CE01/results",
     seed: int = 94,
     batch_size: int = 64,
-    num_epochs: int = 200,
+    num_epochs: int = 100,
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-5,
     early_stopping_patience: int = 30,
@@ -243,7 +269,6 @@ def train_one_snr(
     train_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db.csv")
     eval_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db_eval.csv")
 
-    best_path = os.path.join(results_dir, f"best_model_{snr_db}db.pt")
     plot_path = os.path.join(results_dir, f"training_plot_{snr_db}db.png")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -273,25 +298,26 @@ def train_one_snr(
     )
 
     best_eval_nmae = float("inf")
+    best_epoch = None
 
-    train_mse_history = []
+    train_rmse_history = []
     eval_nmae_history = []
 
     for epoch in range(1, num_epochs + 1):
-        train_mse = run_train_epoch(model, train_loader, device, optimizer)
+        train_rmse = run_train_epoch(model, train_loader, device, optimizer)
         eval_nmae = evaluate_nmae(model, eval_loader, device)
 
-        train_mse_history.append(train_mse)
+        train_rmse_history.append(train_rmse)
         eval_nmae_history.append(eval_nmae)
 
         if eval_nmae < best_eval_nmae:
             best_eval_nmae = eval_nmae
-            torch.save(model.state_dict(), best_path)
+            best_epoch = epoch
 
         print(
             f"SNR {snr_db:2d} dB | "
             f"Epoch [{epoch:03d}/{num_epochs:03d}] | "
-            f"Train MSE: {train_mse:.6f} | "
+            f"Train RMSE: {train_rmse:.6f} | "
             f"Eval NMAE: {eval_nmae:.6f}"
         )
 
@@ -304,21 +330,23 @@ def train_one_snr(
             break
 
     save_train_plot(
-        train_mse_history=train_mse_history,
+        train_rmse_history=train_rmse_history,
         eval_nmae_history=eval_nmae_history,
         save_path=plot_path,
         best_nmae=best_eval_nmae,
+        best_epoch=best_epoch,
     )
 
     print("\nTraining finished.")
     print(f"Best Eval NMAE: {best_eval_nmae:.6f}")
-    print(f"Best model saved to: {best_path}")
+    if best_epoch is not None:
+        print(f"Best epoch: {best_epoch}")
     print(f"Training plot saved to: {plot_path}")
 
     return {
         "snr_db": snr_db,
         "best_eval_nmae": best_eval_nmae,
-        "best_model_path": best_path,
+        "best_epoch": best_epoch,
         "plot_path": plot_path,
     }
 
