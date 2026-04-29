@@ -4,9 +4,9 @@ function generate_wifi_lltf_dataset(snrDb, channelType)
 % 2) 10000 samples  -> <baseName>_eval.csv
 %
 % channelType:
-%   'rayleigh' -> Rayleigh fading channel
-%   'rician'   -> Rician fading channel
-%   'onetap'   -> AWGN (onetap fading, no multipath)
+%   'onetap'   -> one-tap flat Rayleigh block fading
+%   'rayleigh' -> multipath Rayleigh fading channel
+%   'rician'   -> multipath Rician fading channel
 %
 % useCFO:
 %   true  -> apply CFO
@@ -29,6 +29,7 @@ numMainSamples = 100000;
 numEvalSamples = 10000;
 
 %% Output files
+% Keep original naming so existing wrapper stays compatible.
 baseName = sprintf('wifi_lltf_dataset_%ddb', round(snrDb));
 mainFile = sprintf('%s.csv', baseName);
 evalFile = sprintf('%s_eval.csv', baseName);
@@ -39,30 +40,35 @@ fcHz = 2.412e9;
 useCFO = false;
 
 %% Channel Setting
-numTapsRange = [2 4];
-maxDelaySamples = 10;
-pdpTauSamples = 2;
+% Used for multipath Rayleigh / Rician
+numTapsRange = [3 5];
+maxDelaySamples = 8;
+pdpTauSamples = 1.5;
 
+% Used for Rician
 kDbMean = 3.0;
 kDbStd  = 2.0;
 kDbMin  = 0.0;
 kDbMax  = 7.0;
 
-pSecondWeakRician = 0.20;
-kDbMeanWeak = 2.0;
+pSecondWeakRician = 0.10;
+kDbMeanWeak = 1.5;
 kDbStdWeak  = 1.0;
 kDbMinWeak  = 0.0;
 kDbMaxWeak  = 4.0;
 
+% Mobility / Doppler
 speedRangeMps = [0 5];
 
+% Random start time for fading process
+randomStartTimeMaxSec = 0.5;
+
+% CFO setting
 cfoPpmMean = 0;
-cfoPpmStd  = 0.5;
-cfoPpmClip = 1;
+cfoPpmStd  = 1;
+cfoPpmClip = 3;
 
-randomStartTimeMaxSec = 1.0;
-numSinusoids = 48;
-
+% Seeds
 mainSeed = 94;
 evalSeed = 3094;
 
@@ -127,7 +133,6 @@ P.cfoPpmClip = cfoPpmClip;
 P.useCFO = useCFO;
 
 P.randomStartTimeMaxSec = randomStartTimeMaxSec;
-P.numSinusoids = numSinusoids;
 
 %% Summary
 fprintf('Configuration summary\n');
@@ -209,24 +214,16 @@ end
 function rxLLTF = passThroughSelectedChannel(P, baseSeed, sampleIdx)
 switch P.channelType
     case 'onetap'
-        h = sampleOneTapGain(baseSeed, sampleIdx);
-        rxLLTF = h * P.txLLTF;
+        seedNow = baseSeed + sampleIdx - 1;
+        chan = createStdOneTapRayleighChannel(P.Fs, seedNow);
+        rxLLTF = runChannel(chan, P.txLLTF, 0, 0);
 
     case 'rayleigh'
         [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime] = ...
             sampleChannelProfile(P, baseSeed, sampleIdx);
 
-        chan = comm.RayleighChannel( ...
-            'SampleRate', P.Fs, ...
-            'PathDelays', pathDelaysSec, ...
-            'AveragePathGains', avgPathGainsDb, ...
-            'NormalizePathGains', true, ...
-            'MaximumDopplerShift', thisMaxFdHz, ...
-            'FadingTechnique', 'Sum of sinusoids', ...
-            'NumSinusoids', P.numSinusoids, ...
-            'InitialTimeSource', 'Input port', ...
-            'RandomStream', 'mt19937ar with seed', ...
-            'Seed', seedNow);
+        chan = createStdRayleighChannel(P.Fs, pathDelaysSec, avgPathGainsDb, ...
+            thisMaxFdHz, seedNow);
 
         rxLLTF = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
 
@@ -234,40 +231,84 @@ switch P.channelType
         [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime, numTaps] = ...
             sampleChannelProfile(P, baseSeed, sampleIdx);
 
+        % KFactor must be linear scale, not dB.
         kVec = zeros(1, numTaps);
-        kVec(1) = 10^(sampleTruncGaussian(P.kDbMean, P.kDbStd, P.kDbMin, P.kDbMax) / 10);
+        kVec(1) = 10^(sampleTruncGaussian(P.kDbMean, P.kDbStd, ...
+            P.kDbMin, P.kDbMax) / 10);
 
-        if numTaps >= 3 && rand < P.pSecondWeakRician
+        % Optional weak LOS on second path.
+        if numTaps >= 2 && rand < P.pSecondWeakRician
             kVec(2) = 10^(sampleTruncGaussian(P.kDbMeanWeak, P.kDbStdWeak, ...
                 P.kDbMinWeak, P.kDbMaxWeak) / 10);
         end
 
+        % LOS parameters only for paths with positive KFactor.
         losFd = zeros(1, numTaps);
         losPhase = zeros(1, numTaps);
         idxLos = (kVec > 0);
         losFd(idxLos) = (2 * rand(1, nnz(idxLos)) - 1) * thisMaxFdHz;
         losPhase(idxLos) = 2 * pi * rand(1, nnz(idxLos));
 
-        chan = comm.RicianChannel( ...
-            'SampleRate', P.Fs, ...
-            'PathDelays', pathDelaysSec, ...
-            'AveragePathGains', avgPathGainsDb, ...
-            'NormalizePathGains', true, ...
-            'KFactor', kVec, ...
-            'DirectPathDopplerShift', losFd, ...
-            'DirectPathInitialPhase', losPhase, ...
-            'MaximumDopplerShift', thisMaxFdHz, ...
-            'FadingTechnique', 'Sum of sinusoids', ...
-            'NumSinusoids', P.numSinusoids, ...
-            'InitialTimeSource', 'Input port', ...
-            'RandomStream', 'mt19937ar with seed', ...
-            'Seed', seedNow);
+        chan = createStdRicianChannel(P.Fs, pathDelaysSec, avgPathGainsDb, ...
+            kVec, losFd, losPhase, thisMaxFdHz, seedNow);
 
         rxLLTF = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
 
     otherwise
         error('Unsupported channelType: %s', P.channelType);
 end
+end
+
+
+function chan = createStdOneTapRayleighChannel(Fs, seedNow)
+% One-tap flat Rayleigh block fading.
+% PathDelays = 0 and AveragePathGains = 0 define a flat channel.
+
+chan = comm.RayleighChannel( ...
+    'SampleRate', Fs, ...
+    'PathDelays', 0, ...
+    'AveragePathGains', 0, ...
+    'NormalizePathGains', true, ...
+    'MaximumDopplerShift', 0, ...
+    'FadingTechnique', 'Sum of sinusoids', ...
+    'InitialTimeSource', 'Input port', ...
+    'RandomStream', 'mt19937ar with seed', ...
+    'Seed', seedNow);
+end
+
+
+function chan = createStdRayleighChannel(Fs, pathDelaysSec, avgPathGainsDb, ...
+    maxFdHz, seedNow)
+
+chan = comm.RayleighChannel( ...
+    'SampleRate', Fs, ...
+    'PathDelays', pathDelaysSec, ...
+    'AveragePathGains', avgPathGainsDb, ...
+    'NormalizePathGains', true, ...
+    'MaximumDopplerShift', maxFdHz, ...
+    'FadingTechnique', 'Sum of sinusoids', ...
+    'InitialTimeSource', 'Input port', ...
+    'RandomStream', 'mt19937ar with seed', ...
+    'Seed', seedNow);
+end
+
+
+function chan = createStdRicianChannel(Fs, pathDelaysSec, avgPathGainsDb, ...
+    kVec, losFd, losPhase, maxFdHz, seedNow)
+
+chan = comm.RicianChannel( ...
+    'SampleRate', Fs, ...
+    'PathDelays', pathDelaysSec, ...
+    'AveragePathGains', avgPathGainsDb, ...
+    'NormalizePathGains', true, ...
+    'KFactor', kVec, ...
+    'DirectPathDopplerShift', losFd, ...
+    'DirectPathInitialPhase', losPhase, ...
+    'MaximumDopplerShift', maxFdHz, ...
+    'FadingTechnique', 'Sum of sinusoids', ...
+    'InitialTimeSource', 'Input port', ...
+    'RandomStream', 'mt19937ar with seed', ...
+    'Seed', seedNow);
 end
 
 
@@ -308,10 +349,6 @@ rxLLTF = rxPad(chDelay + (1:numel(txLLTF)));
 release(chan);
 end
 
-function h = sampleOneTapGain(baseSeed, sampleIdx)
-rs = RandStream('mt19937ar', 'Seed', baseSeed + sampleIdx - 1);
-h = (randn(rs, 1, 1) + 1j * randn(rs, 1, 1)) / sqrt(2);
-end
 
 function delaysSamp = sampleDelayProfile(numTaps, maxDelaySamples)
 if numTaps == 1
@@ -371,6 +408,7 @@ noisePower = signalPower / (10^(snrDb / 10));
 noise = sqrt(noisePower / 2) * (randn(size(x)) + 1j * randn(size(x)));
 y = x + noise;
 end
+
 
 function row = complexToIQIQRow(x)
 x = x(:).';
