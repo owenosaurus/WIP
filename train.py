@@ -12,6 +12,17 @@ from torch.utils.data import DataLoader, Dataset
 
 
 # ============================================================
+# Project-local defaults
+# ============================================================
+
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DATA_DIR = os.path.join(PROJECT_DIR, "data_set")
+DEFAULT_SAVE_DIR = os.path.join(PROJECT_DIR, "results")
+DEFAULT_TRAIN_CSV_PATTERN = "dataset_onetap_{snr_db}db.csv"
+DEFAULT_EVAL_CSV_PATTERN = "dataset_onetap_{snr_db}db_eval.csv"
+
+
+# ============================================================
 # Basic utilities
 # ============================================================
 
@@ -47,13 +58,13 @@ class LSChannelCFRDataset(Dataset):
     Dataset for supervised channel estimation after FFT-LS.
 
     Expected sample:
-        x: FFT 이후 LS 추정값, 104-dimensional real vector
+        x: LS after FFT, 104-dimensional real vector
         y: true channel frequency response, 104-dimensional real vector
 
     Column resolution rule:
         1) If input_cols/target_cols are explicitly given, use them.
         2) Else, try common prefixes such as x0~x103 and y0~y103.
-        3) Else, use the first 208 numeric columns:
+        3) Else, require exactly 208 numeric columns:
               first 104 columns  -> input x
               next 104 columns   -> label y
 
@@ -119,16 +130,20 @@ class LSChannelCFRDataset(Dataset):
             numeric_df = numeric_df.loc[:, ~unnamed_mask]
 
             required_dim = input_dim + target_dim
-            if numeric_df.shape[1] < required_dim:
+            found_dim = numeric_df.shape[1]
+            if found_dim != required_dim:
                 raise ValueError(
-                    f"CSV must contain at least {required_dim} numeric columns "
+                    f"CSV must contain exactly {required_dim} numeric columns "
                     f"when input_cols/target_cols are not given. "
-                    f"Found {numeric_df.shape[1]} numeric columns in {csv_path}."
+                    f"Found {found_dim} numeric columns in {csv_path}. "
+                    f"This strict check prevents silent slicing of extra numeric columns. "
+                    f"If your CSV has metadata or additional numeric columns, pass "
+                    f"--input_cols and --target_cols explicitly."
                 )
 
             x_np = numeric_df.iloc[:, :input_dim].to_numpy(dtype=np.float32)
             y_np = numeric_df.iloc[:, input_dim:required_dim].to_numpy(dtype=np.float32)
-            self.column_mode = "first 208 numeric columns"
+            self.column_mode = f"exactly {required_dim} numeric columns"
 
         if x_np.shape[1] != input_dim:
             raise ValueError(f"Input dimension mismatch: expected {input_dim}, got {x_np.shape[1]}")
@@ -438,8 +453,8 @@ def save_train_plot(
 
 def train_one_snr(
     snr_db: int,
-    data_dir: str = "/home/jinx/project/CE01/data_set",
-    save_dir: str = "/home/jinx/project/CE01/results",
+    data_dir: str = DEFAULT_DATA_DIR,
+    save_dir: str = DEFAULT_SAVE_DIR,
     seed: int = 94,
     batch_size: int = 64,
     num_epochs: int = 200,
@@ -459,13 +474,19 @@ def train_one_snr(
 ):
     set_seed(seed)
 
+    if iq_layout in {"interleaved", "ri_block"} and output_dim != 104:
+        raise ValueError(
+            f"iq_layout='{iq_layout}' assumes a 104-dimensional flattened complex CFR, "
+            f"but output_dim={output_dim}. Use output_dim=104 or iq_layout='scalar'."
+        )
+
     results_dir = resolve_results_dir(save_dir)
     os.makedirs(results_dir, exist_ok=True)
 
     if train_csv_path is None:
-        train_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db.csv")
+        train_csv_path = os.path.join(data_dir, DEFAULT_TRAIN_CSV_PATTERN.format(snr_db=snr_db))
     if eval_csv_path is None:
-        eval_csv_path = os.path.join(data_dir, f"wifi_lltf_dataset_{snr_db}db_eval.csv")
+        eval_csv_path = os.path.join(data_dir, DEFAULT_EVAL_CSV_PATTERN.format(snr_db=snr_db))
 
     plot_path = os.path.join(results_dir, f"training_plot_{snr_db}db.png")
 
@@ -598,10 +619,10 @@ def train_one_snr(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--snr_db", type=int, default=18)
-    parser.add_argument("--data_dir", type=str, default="/home/jinx/project/CE01/data_set")
-    parser.add_argument("--save_dir", type=str, default="/home/jinx/project/CE01/results")
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--save_dir", type=str, default=DEFAULT_SAVE_DIR)
 
-    # Optional direct paths. If omitted, original filename rule is preserved.
+    # Optional direct paths. If omitted, default dataset_onetap filename rule is used.
     parser.add_argument("--train_csv_path", type=str, default=None)
     parser.add_argument("--eval_csv_path", type=str, default=None)
 
