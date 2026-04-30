@@ -4,7 +4,13 @@ from typing import Iterable
 
 import pandas as pd
 
-from train import resolve_results_dir, train_one_snr, parse_column_list
+from train import (
+    resolve_results_dir,
+    train_one_snr,
+    parse_column_list,
+    DEFAULT_DATA_DIR,
+    DEFAULT_SAVE_DIR,
+)
 
 def _build_csv_path(
     data_dir: str,
@@ -21,8 +27,8 @@ def _build_csv_path(
 
 def run_snr_sweep(
     snr_list: Iterable[int],
-    data_dir: str = "/home/jinx/project/CE01/data_set",
-    save_dir: str = "/home/jinx/project/CE01/results",
+    data_dir: str = DEFAULT_DATA_DIR,
+    save_dir: str = DEFAULT_SAVE_DIR,
     csv_name: str = "results_table.csv",
     train_csv_pattern: str | None = None,
     eval_csv_pattern: str | None = None,
@@ -116,14 +122,14 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--snr_list", type=int, nargs="+", default=[0, 3, 6, 9, 12, 15, 18])
-    parser.add_argument("--data_dir", type=str, default="/home/jinx/project/CE01/data_set")
-    parser.add_argument("--save_dir", type=str, default="/home/jinx/project/CE01/results")
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--save_dir", type=str, default=DEFAULT_SAVE_DIR)
     parser.add_argument("--csv_name", type=str, default="results_table.csv")
 
     # Optional per-SNR filename patterns.
-    # If omitted, train_one_snr() uses:
-    #   wifi_lltf_dataset_{snr_db}db.csv
-    #   wifi_lltf_dataset_{snr_db}db_eval.csv
+    # If omitted, train_one_snr() uses the project-local default patterns:
+    #   dataset_onetap_{snr_db}db.csv
+    #   dataset_onetap_{snr_db}db_eval.csv
     parser.add_argument("--train_csv_pattern", type=str, default=None)
     parser.add_argument("--eval_csv_pattern", type=str, default=None)
 
